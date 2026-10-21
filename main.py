@@ -2,6 +2,8 @@ import discord
 from discord.ext import commands
 import re
 import random
+import asyncio
+import time
 
 with open("credentials.txt", "r") as f:
     q = f.read().splitlines()
@@ -164,5 +166,48 @@ async def pay(ctx, user: str, amount: int):
     give(user, amount)
     await ctx.send(f"Sent {user} {amount} monies!")
 
-
+@client.command("slots")
+async def slots(ctx, bet: int):
+    user = ctx.author.name
+    if not take(user, bet):
+        await ctx.send("You don't have that much money!")
+        return
+    symbols = ["🍒","🍋","🍊","🍇","🍉","🔔","⭐","💎","7️⃣","💰","🪙","👑","🍀","🐱","🐟","🌈","🧨","💀","🦈"]
+    # Slot spinning
+    # ⠀ SYMBOL ⠀
+    upls = [random.choice(symbols), random.choice(symbols), random.choice(symbols)]
+    midls = [random.choice(symbols), random.choice(symbols), random.choice(symbols)]
+    msgup = await ctx.send("⠀ "+" ⠀⠀ ".join(upls)+" ⠀")
+    msg = await ctx.send(" ".join(midls))
+    msgdown = await ctx.send("⠀ "+" ⠀⠀ ".join([random.choice(symbols), random.choice(symbols), random.choice(symbols)])+" ⠀")
+    for i in range(5):
+        new_upls = [random.choice(symbols) for _ in range(3)]
+        await asyncio.gather(
+            msgdown.edit(content="⠀ " + " ⠀⠀ ".join(midls) + " ⠀"),
+            msg.edit(content=" ".join(upls)),
+            msgup.edit(content="⠀ " + " ⠀⠀ ".join(new_upls) + " ⠀")
+        )
+        midls = upls
+        upls = new_upls
+        await asyncio.sleep(0.5)
+    # Calculating results
+    multipliers = {
+        "7️⃣": 300,
+        "💎": 200, "💰": 200, "👑": 200,
+        "🔔": 150, "⭐": 150, "🍀": 150, "🌈": 150, "🪙": 150, "🦈": 150,
+        "🍒": 70, "🍋": 70, "🍊": 70, "🍇": 70, "🍉": 70,
+        "🐱": 70, "🐟": 70, "🧨": 70, "💀": 70,
+    }
+    # 3 of a kind
+    ret = 0
+    if midls[0] == midls[1] and midls[1] == midls[2]:
+        ret = bet * multipliers[midls[0]]
+    elif midls[0] == midls[1] or midls[0] == midls[2] or midls[1] == midls[2]:
+        ret = bet * 3
+    if ret == 0:
+        await ctx.send("Aww, better luck next time. You didn't win anything.")
+    else:
+        await ctx.send(f"You won {ret} monies!")
+        give(user, ret)
+        
 client.run(q[0])
