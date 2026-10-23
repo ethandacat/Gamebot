@@ -209,5 +209,66 @@ async def slots(ctx, bet: int):
     else:
         await ctx.send(f"You won {ret} monies!")
         give(user, ret)
-        
+
+@client.command("wordle")
+async def wordle(ctx, bet: int, word: str):
+    user = ctx.author.name
+    # Word
+    worda = ""
+    with open("wordle.txt", "r") as f:
+        worda = random.choice(f.read().split("\n"))
+    print(worda)
+    counted = [0 for i in range(5)]
+    # Green
+    winning = 0
+    for i in range(5):
+        if worda[i] == word[i]:
+            winning += 0.5
+            counted[i] = 1
+    # Yellow
+    for i in range(5):
+       for j in range(5):
+          if not counted[j] and worda[j] == word[i]:
+              winning += 0.25
+              counted[j] = 1
+              break
+    am = bet * winning
+    await ctx.send(f"Congratulations! You won {am} monies! (Word was {worda})")
+    give(user, am)
+
+@client.command("roulette")
+async def roulette(ctx, bet: int, color: str):
+    user = ctx.author.name
+    l = random.randint(0, 36)
+    winnings = 0
+    if l == 0:
+        # Green
+        if color.lower() == "green":
+            winnings = 20 * bet
+    elif l < 19:
+        # Red
+        if color.lower() == "red":
+            winnings = 2 * bet
+    else:
+        # Black
+        if color.lower() == "black":
+            winnings = 2 * bet
+    if winnings == 0:
+        await ctx.send(f"The wheel decided against you and landed on {[['green'], ['red', 'black']][l != 0][l > 18]}")
+    else:
+        await ctx.send(f"You won {winnings} monies!")
+        give(user, winnings)
+
+@client.command(name="dice")
+def dice(ctx, bet: int, guess: int):
+    user = ctx.author.name
+    a = random.randint(1, 6) + random.randint(1, 6)
+    if a == guess:
+        await ctx.send(f"You won ${bet*3}!")
+        give(user, bet*3)
+    else:
+        await ctx.send(f"Aww, you lost. The dice rolled a ${a}.")
+
+
+
 client.run(q[0])
