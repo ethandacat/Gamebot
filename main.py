@@ -3,6 +3,8 @@ from discord.ext import commands
 import re
 import random
 import asyncio
+import json
+import os
 
 with open("credentials.txt", "r") as f:
     q = f.read().splitlines()
@@ -49,11 +51,37 @@ def place_bet(user, bet):
         return "You don't have that much money!"
     return None
 
-# Inventory system
 inventory = {}
 
-def load():
-    
+try:
+    with open("inventory.json", "r") as f:
+        inventory = json.load(f)
+except FileNotFoundError:
+    pass
+
+def saveInventory():
+    with open("inventory.json", "w") as f:
+        json.dump(inventory, f)
+
+def giveInventory(user, item, count=1):
+    inventory.setdefault(user, {})
+    inventory[user][item] = inventory[user].get(item, 0) + count
+    saveInventory()
+
+def getInventory(user):
+    return inventory.get(user, {})
+
+def removeInventory(user, item, count=1):
+    if inventory.get(user, {}).get(item, 0) < count:
+        return "User does not have enough items"
+
+    inventory[user][item] -= count
+
+    if inventory[user][item] == 0:
+        del inventory[user][item]
+
+    saveInventory()
+    return None
 
 @client.event
 async def on_ready():
@@ -846,6 +874,64 @@ async def blackjack(ctx, bet: int):
         embed=embed,
         view=view
     )
+
+@client.command(name="craps")
+async def craps(ctx, bet: int, beton: str):
+    user = ctx.author.name
+    beton = beton.lower()
+    if beton != "pass" and beton != "dontpass":
+        await ctx.send("Choose a line to bet on (put 'pass' or 'dontpass')")
+        return
+    err = place_bet(user, bet)
+    if err:
+        await ctx.send(err)
+        return
+    # Comeout roll
+    a = random.randint(1, 6) + random.randint(1, 6)
+    if a == 7 or a == 11:
+        if beton == "pass":
+            await ctx.send(f"You won! The shooter rolled {a}.")
+            give(user, bet * 2)
+        else:
+            await ctx.send(f"You lost, the shooter rolled a {a}.")
+        return
+    
+    if a == 2 or a == 3:
+        if beton == "dontpass":
+            await ctx.send(f"You won! The shooter rolled {a}.")
+            give(user, bet * 2)
+        else:
+            await ctx.send(f"You lost, the shooter rolled a {a}.")
+        return
+    
+    if a == 12:
+        if beton == "dontpass":
+            await ctx.send("You pushed. The shooter rolled a 12.")
+            give(user, bet)
+        else:
+            await ctx.send("You lost, the shooter rolled a 12.")
+        return
+    await ctx.send(f"Point is: {a}")
+    # Points rolls
+    b = 0
+    while b != 7:
+        b = random.randint(1, 6) + random.randint(1, 6)
+        await ctx.send(f"The shooter rolled {b}!")
+        if b == a:
+            # Pass wins - Don't pass loses
+            if beton == "dontpass":
+                await ctx.send("The point was reached. You lost.")
+                return
+            else:
+                await ctx.send("You won!")
+                give(user, bet * 2)
+                return
+    # Don't pass wins
+    if beton == "dontpass":
+        await ctx.send("You won! The dealer rolled 7.")
+        give(user, bet * 2)
+    else:
+        await ctx.send("You lost, the dealer rolled a 7.")
 
 @client.command(name="help")
 async def help(ctx):
