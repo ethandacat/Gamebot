@@ -933,6 +933,140 @@ async def craps(ctx, bet: int, beton: str):
     else:
         await ctx.send("You lost, the dealer rolled a 7.")
 
+allstocks = {
+    "ROBO": 100,
+    "FOOD": 100,
+    "BRUH": 100,
+    "NVDA": 1000,
+    "NPPP": 100
+}
+
+@client.command(name="stocks")
+async def stocks(ctx):
+    user = ctx.author.name
+    # List stocks
+    a = [i.split("stock")[1] for i, j in getInventory(user).items() if i.startswith("stock")]
+    await ctx.send("Your stocks: \n"+"\n".join([i + " - $"+str(allstocks[i]) for i in a]))
+
+@client.command(name="stockprice")
+async def stockprice(ctx):
+    # Stock price
+    await ctx.send([i + ": $"+str(j) for i, j in allstocks])
+
+@client.command(name="buystocks")
+async def buystocks(ctx, ticker: str):
+    user = ctx.author.name
+    ticker = ticker.upper()
+    if allstocks.get(ticker, 0) == 0:
+        await ctx.send("This stock doesn't exist!")
+        return
+    if place_bet(user, allstocks[ticker]):
+        await ctx.send("You don't have enough monies!")
+        return
+    giveInventory(user, "stock"+ticker)
+    allstocks[ticker] += random.randint(1, 10)
+
+@client.command(name="sellstocks")
+async def sellstocks(ctx, ticker: str):
+    user = ctx.author.name
+    ticker = ticker.upper()
+    if allstocks.get(ticker, 0) == 0:
+        await ctx.send("This stock doesn't exist!")
+        return
+    if removeInventory(user, "stock"+ticker):
+        await ctx.send("You don't have enough of this stock!")
+        return
+    allstocks[ticker] -= random.randint(1, 10)
+    give(user, allstocks[ticker])
+
+def highlowvalue(card):
+    if card == "A":
+        return 1
+    if card in ["J", "Q", "K"]:
+       return ["J", "Q", "K"] .index(card) + 11
+    return int(card)
+
+class HighLowView(discord.ui.View):
+    def __init__(self, bet, author):
+        self.bet = bet
+        self.author = author
+        self.points = 0
+        self.guesses = 0
+        self.gameover = False
+        self.lastcard = generatecard()
+    async def start(self, ctx):
+        embed = discord.Embed(
+            title="Higher or Lower - GameBot",
+            description=f"Card: **{self.lastcard}**\nGuess **higher or lower**!\n\nGuesses: {self.guesses}/5\nPoints: {self.points}/5",
+            color=discord.Color.blurple()
+        )
+        await ctx.send(embed=embed, view=self)
+    @discord.ui.button(label="Higher", style=discord.ButtonStyle.primary)
+    async def higher(self, interaction: discord.Interaction, button: discord.Button):
+        if self.author != interaction.user:
+            await interaction.response.send_message("This isn't your game of Higher or Lower!", ephemeral = True)
+            return
+        if self.gameover:
+            await interaction.response.send_message("This game is over!", ephemeral = True)
+            return
+        card = generatecard()
+        self.guesses += 1
+        while card == self.lastcard:
+            card = generatecard()
+        if highlowvalue(card) > highlowvalue(self.lastcard):
+            # Point +
+            self.points += 1
+        embed = discord.Embed(
+            title="Higher or Lower - GameBot",
+            description=f"Card: **{card}**\nGuess **higher or lower**!\n\nGuesses: {self.guesses}/5\nPoints: {self.points}/5",
+            color=discord.Color.blurple()
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+        self.lastcard = card
+        # Check guesses over
+        if self.guesses == 5:
+            await interaction.response.send_message(f"You won {self.points} out of {self.guesses}! You won {round(self.bet * self.points / self.guesses * 2)} monies!")
+            give(user, round(self.bet * self.points / self.guesses * 2))
+            self.gameover = True
+
+        @discord.ui.button(label="Lower", style=discord.ButtonStyle.primary)
+        async def lower(self, interaction: discord.Interaction, button: discord.Button):
+            if self.author != interaction.user:
+                await interaction.response.send_message("This isn't your game of Higher or Lower!", ephemeral = True)
+                return
+            if self.gameover:
+                await interaction.response.send_message("This game is over!", ephemeral = True)
+                return
+            card = generatecard()
+            self.guesses += 1
+            while card == self.lastcard:
+                card = generatecard()
+            if highlowvalue(card) < highlowvalue(self.lastcard):
+                self.points += 1
+            embed = discord.Embed(
+                title="Higher or Lower - GameBot",
+                description=f"Card: **{card}**\nGuess **higher or lower**!\n\nGuesses: {self.guesses}/5\nPoints: {self.points}/5",
+                color=discord.Color.blurple()
+            )
+            await interaction.response.edit_message(embed=embed, view=self)
+            # Check guesses over
+            if self.guesses == 5:
+                await interaction.response.send_message(f"You won {self.points} out of {self.guesses}! You won {round(self.bet * self.points / self.guesses * 2)} monies!")
+                give(user, round(self.bet * self.points / self.guesses * 2))
+                self.gameover = True
+        
+
+@client.command(name="highlow")
+async def highlow(ctx, bet: int):
+    user = ctx.author.name
+    if place_bet(user, bet):
+        await ctx.send("you don't have enough monies!")
+        return
+    a = HighLowView(bet, user)
+    await a.start(ctx)
+
+
+
 @client.command(name="help")
 async def help(ctx):
     await ctx.send("""
@@ -955,6 +1089,12 @@ GameBot is a bot designed for you to gamble in slots, roulette, dice, and more! 
 * .nim [bet] - Play subtraction nim
 * .crash [bet] - Play crash, except it's not rigged.
 * .blackjack [bet] - Play blackjack (also known as 21) without gambling your life savings.
+* .craps [bet] [bet on: pass/dontpass] - Play the classic casino dice game: craps.
+* .stocks - Check your stocks
+* .stockprices - Check stock prices
+* .buystocks [ticker] - Buy a stock
+* .sellstocks [ticker] - Sell a stock
+* .highlow [bet] - Play HighLow
 
 The currency for interacting with GameBot is monies. Monies can be earned from gambling, being paid by another user, stealing from another user, working, or begging.
 
