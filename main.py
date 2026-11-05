@@ -1,3 +1,7 @@
+from operator import truediv
+
+from itertools import combinations
+from collections import Counter
 import discord
 from discord.ext import commands
 import re
@@ -5,9 +9,15 @@ import random
 import asyncio
 import json
 import os
+import pyphen
+
+import gensim.downloader as api
+model = api.load("glove-wiki-gigaword-100")
 
 with open("credentials.txt", "r") as f:
     q = f.read().splitlines()
+
+dc = pyphen.Pyphen(lang="en_US")
 
 i = discord.Intents.default()
 i.message_content = True
@@ -102,8 +112,33 @@ async def on_message(message):
     if x:
         await message.channel.send(f"Hi, {x[2]}!")
 
-    await client.process_commands(message)
+    # Haiku
+    w = [(i, dc.inserted(i).split("-")) for i in re.findall(r"[a-zA-Z']+", message.content)]
+    
+    if sum(len(p) for i, p in w) == 17:
+        lines = ["", "", ""]
+        limits = [5, 7, 5]
+        line = count = 0
+    
+        for word, parts in w:
+            while parts:
+                remaining = limits[line] - count
+                take = parts[:remaining]
+    
+                lines[line] += (" " if lines[line] else "") + "".join(take)
+                parts = parts[remaining:]
+                count += len(take)
+    
+                if count == limits[line] and line < 2:
+                    line += 1
+                    count = 0
+    
+        await message.channel.send("Here's a haiku!\n" + "\n".join(lines))
 
+    if "technoblade" in message.content.lower():
+        await message.channel.send("TECHNOBLADE NEVER DIES")
+    
+    await client.process_commands(message)
 
 @client.command(name="leaderboard")
 async def leaderboard(ctx):
@@ -1054,7 +1089,6 @@ class HighLowView(discord.ui.View):
                 await interaction.response.send_message(f"You won {self.points} out of {self.guesses}! You won {round(self.bet * self.points / self.guesses * 2)} monies!")
                 give(user, round(self.bet * self.points / self.guesses * 2))
                 self.gameover = True
-        
 
 @client.command(name="highlow")
 async def highlow(ctx, bet: int):
@@ -1065,7 +1099,647 @@ async def highlow(ctx, bet: int):
     a = HighLowView(bet, user)
     await a.start(ctx)
 
+SUITS = ["♠️", "♥️", "♦️", "♣️"]
+RANK_NAMES = {**{i: str(i) for i in range(2, 11)}, 11: "J", 12: "Q", 13: "K", 14: "A"}
+HAND_NAMES = [
+    "High Card", "One Pair", "Two Pair", "Three of a Kind", "Straight",
+    "Flush", "Full House", "Four of a Kind", "Straight Flush",
+]
 
+SMALL_BLIND = 1
+BIG_BLIND = 2
+RAISE_SIZE = 2
+MAX_RAISES = 3
+TIMEOUT = 300
+
+
+def new_deck():
+    deck = [(v, s) for s in SUITS for v in range(2, 15)]
+    random.shuffle(deck)
+    return deck
+
+
+def fmt_cards(cards):
+    return " ".join(f"{RANK_NAMES[v]}{s}" for v, s in cards)
+
+
+def score5(cards):
+    vals = [c[0] for c in cards]
+    counts = Counter(vals)
+    groups = sorted(counts.items(), key=lambda kv: (kv[1], kv[0]), reverse=True)
+    ordered = [v for v, _ in groups]
+    shape = [c for _, c in groups]
+    uniq = sorted(set(vals), reverse=True)
+    flush = len({c[1] for c in cards}) == 1
+    straight_high = 0
+    if len(uniq) == 5:
+        if uniq[0] - uniq[4] == 4:
+            straight_high = uniq[0]
+        elif uniq == [14, 5, 4, 3, 2]:
+            straight_high = 5
+
+    if straight_high and flush:
+        return (8, straight_high)
+    if shape == [4, 1]:
+        return (7, *ordered)
+    if shape == [3, 2]:
+        return (6, *ordered)
+    if flush:
+        return (5, *uniq)
+    if straight_high:
+        return (4, straight_high)
+    if shape == [3, 1, 1]:
+        return (3, *ordered)
+    if shape == [2, 2, 1]:
+        return (2, *ordered)
+    if shape == [2, 1, 1, 1]:
+        return (1, *ordered)
+    return (0, *uniq)
+
+
+def best_hand(cards):
+    return max(score5(c) for c in combinations(cards, 5))
+
+
+def hand_name(score):
+    if score[0] == 8 and score[1] == 14:
+        return "Royal Flush"
+    return HAND_NAMES[score[0]]
+
+
+class StartTexasHoldem(discord.ui.View):
+    def __init__(self, user):
+        super().__init__(timeout=TIMEOUT)
+        self.user = user
+        self.started = False
+
+    @discord.ui.button(label="Join Game", style=discord.ButtonStyle.primary)
+    async def join_game(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user == self.user:
+            await interaction.response.send_message("You cannot sign up for your own game!", ephemeral=True)
+            return
+        if interaction.user.bot:
+            await interaction.response.send_message("Bots can't play.", ephemeral=True)
+            return
+        if self.started:
+            await interaction.response.send_message("This game has already started!", ephemeral=True)
+            return
+        self.started = True
+        err = place_bet(self.user.name, SMALL_BLIND)
+        if err:
+            self.started = False
+            await interaction.response.send_message(f"The host can't post the blind: {err}", ephemeral=True)
+            return
+        err = place_bet(interaction.user.name, BIG_BLIND)
+        if err:
+            give(self.user.name, SMALL_BLIND)
+            self.started = False
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+        game = TexasHoldemGame(self.user, interaction.user)
+        game.message = interaction.message
+        await interaction.response.edit_message(embed=game.build_embed(), view=game)
+        self.stop()
+
+
+class TexasHoldemGame(discord.ui.View):
+    STREETS = ["Pre-Flop", "Flop", "Turn", "River"]
+
+    def __init__(self, host, guest):
+        super().__init__(timeout=TIMEOUT)
+        self.players = [host, guest]
+        self.deck = new_deck()
+        self.hole = [[self.deck.pop(), self.deck.pop()],
+                     [self.deck.pop(), self.deck.pop()]]
+        self.community = []
+        self.total = [SMALL_BLIND, BIG_BLIND]
+        self.street_bet = [SMALL_BLIND, BIG_BLIND]
+        self.street = "Pre-Flop"
+        self.to_act = 0
+        self.acted = set()
+        self.raises = 0
+        self.over = False
+        self.showdown = False
+        self.result_text = ""
+        self.message = None
+        self.lock = asyncio.Lock()
+        self.last_action = (
+            f"{host.name} posted {SMALL_BLIND}, {guest.name} posted {BIG_BLIND}. "
+            f"Press **My Cards** to see your hand."
+        )
+        self._sync_buttons()
+
+    def name(self, i):
+        return self.players[i].name
+
+    @property
+    def pot(self):
+        return sum(self.total)
+
+    def to_call(self, i):
+        return max(self.street_bet) - self.street_bet[i]
+
+    def _sync_buttons(self):
+        if self.over:
+            for child in self.children:
+                child.disabled = True
+            return
+        need = self.to_call(self.to_act)
+        self.call_button.label = "Check" if need == 0 else f"Call {need}"
+        self.raise_button.label = f"Raise +{RAISE_SIZE}"
+        self.raise_button.disabled = self.raises >= MAX_RAISES
+
+    def build_embed(self):
+        title = "Game Over" if self.over else self.street
+        lines = [
+            f"{self.name(0)} bet: {self.total[0]}",
+            f"{self.name(1)} bet: {self.total[1]}",
+            f"**Total Pot: {self.pot}**",
+        ]
+        if self.community:
+            lines += ["", f"Community cards: {fmt_cards(self.community)}"]
+        if self.over and self.showdown:
+            lines += [
+                "",
+                f"{self.name(0)} cards: {fmt_cards(self.hole[0])}",
+                f"{self.name(1)} cards: {fmt_cards(self.hole[1])}",
+            ]
+        lines += ["", f"Last action: {self.last_action}"]
+        if self.over:
+            lines += ["", self.result_text]
+        else:
+            lines += ["", f"Action on: {self.players[self.to_act].mention}"]
+        return discord.Embed(
+            title=f"{title} - Texas Hold'em - GameBot",
+            description="\n".join(lines),
+            color=discord.Color.blurple(),
+        )
+
+    async def _update(self, interaction):
+        embed = self.build_embed()
+        if interaction is not None:
+            await interaction.response.edit_message(embed=embed, view=self)
+        elif self.message is not None:
+            try:
+                await self.message.edit(embed=embed, view=self)
+            except discord.HTTPException:
+                pass
+
+    async def _finish(self, interaction, winner, text, showdown=False):
+        self.over = True
+        self.showdown = showdown
+        self.result_text = text
+        if winner is None:
+            give(self.name(0), self.total[0])
+            give(self.name(1), self.total[1])
+        else:
+            give(self.name(winner), self.pot)
+        self._sync_buttons()
+        await self._update(interaction)
+        self.stop()
+
+    async def _next_street(self, interaction):
+        idx = self.STREETS.index(self.street)
+        if idx == len(self.STREETS) - 1:
+            await self._do_showdown(interaction)
+            return
+        self.street = self.STREETS[idx + 1]
+        for _ in range(3 if self.street == "Flop" else 1):
+            self.community.append(self.deck.pop())
+        self.street_bet = [0, 0]
+        self.acted = set()
+        self.raises = 0
+        self.to_act = 1
+        self._sync_buttons()
+        await self._update(interaction)
+
+    async def _do_showdown(self, interaction):
+        s0 = best_hand(self.hole[0] + self.community)
+        s1 = best_hand(self.hole[1] + self.community)
+        if s0 > s1:
+            winner, text = 0, f"{self.name(0)} won {self.pot} using {hand_name(s0)}!"
+        elif s1 > s0:
+            winner, text = 1, f"{self.name(1)} won {self.pot} using {hand_name(s1)}!"
+        else:
+            winner, text = None, f"Split pot! Both players have {hand_name(s0)}."
+        await self._finish(interaction, winner, text, showdown=True)
+
+    async def _guard(self, interaction):
+        if self.over:
+            await interaction.response.send_message("This game is over", ephemeral=True)
+            return False
+        if interaction.user != self.players[self.to_act]:
+            await interaction.response.send_message("It's not your turn!", ephemeral=True)
+            return False
+        return True
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user not in self.players:
+            await interaction.response.send_message("This is not your game", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        async with self.lock:
+            if self.over:
+                return
+            loser = self.to_act
+            await self._finish(
+                None, 1 - loser,
+                f"{self.name(loser)} ran out of time and folded. "
+                f"{self.name(1 - loser)} won {self.pot}!",
+            )
+
+    @discord.ui.button(label="Fold", style=discord.ButtonStyle.danger)
+    async def fold_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with self.lock:
+            if not await self._guard(interaction):
+                return
+            i = self.to_act
+            self.last_action = f"{self.name(i)} folded."
+            await self._finish(
+                interaction, 1 - i,
+                f"{self.name(i)} folded. {self.name(1 - i)} won {self.pot} monies!",
+            )
+
+    @discord.ui.button(label="Check", style=discord.ButtonStyle.primary)
+    async def call_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with self.lock:
+            if not await self._guard(interaction):
+                return
+            i = self.to_act
+            need = self.to_call(i)
+            if need:
+                err = place_bet(self.name(i), need)
+                if err:
+                    await interaction.response.send_message(err, ephemeral=True)
+                    return
+                self.street_bet[i] += need
+                self.total[i] += need
+                self.last_action = f"{self.name(i)} called and added {need} monies."
+            else:
+                self.last_action = f"{self.name(i)} checked."
+            self.acted.add(i)
+            if len(self.acted) == 2 and self.street_bet[0] == self.street_bet[1]:
+                await self._next_street(interaction)
+            else:
+                self.to_act = 1 - i
+                self._sync_buttons()
+                await self._update(interaction)
+
+    @discord.ui.button(label="Raise", style=discord.ButtonStyle.success)
+    async def raise_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with self.lock:
+            if not await self._guard(interaction):
+                return
+            if self.raises >= MAX_RAISES:
+                await interaction.response.send_message("Raise limit reached for this street.", ephemeral=True)
+                return
+            i = self.to_act
+            need = self.to_call(i) + RAISE_SIZE
+            err = place_bet(self.name(i), need)
+            if err:
+                await interaction.response.send_message(err, ephemeral=True)
+                return
+            self.street_bet[i] += need
+            self.total[i] += need
+            self.raises += 1
+            self.acted = {i}
+            self.last_action = f"{self.name(i)} raised and added {need} monies."
+            self.to_act = 1 - i
+            self._sync_buttons()
+            await self._update(interaction)
+
+    @discord.ui.button(label="My Cards", style=discord.ButtonStyle.secondary, row=1)
+    async def cards_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        i = self.players.index(interaction.user)
+        await interaction.response.send_message(
+            f"Your cards are: {fmt_cards(self.hole[i])}", ephemeral=True
+        )
+
+@client.command(name="texasholdem")
+async def texasholdem(ctx):
+    user = ctx.author
+    embed = discord.Embed(
+        title="Waiting for Player - Texas Hold'em - GameBot",
+        description="Welcome to the 2 player no limit edition of Texas Hold'em (also known as simply poker). The host is the small blind. NOTE: A raise adds 2 monies on top of the call amount, up to 3 raises per round.",
+        color= discord.Color.blurple()
+    )
+    view = StartTexasHoldem(user)
+    await ctx.send(embed = embed, view = view)
+
+class StartConnectFour(discord.ui.View):
+    def __init__(self, user, bet):
+        super().__init__(timeout=300)
+        self.user = user
+        self.bet = bet
+        self.gameover = False
+    @discord.ui.button(label="Join Game", style=discord.ButtonStyle.primary)
+    async def join_game(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user == self.user:
+            interaction.response.send_message("You can't join your own game!", ephemeral = True)
+            return
+        if self.gameover:
+            interaction.response.send_message("This game has already started!", ephemeral = True)
+            return
+        err = place_bet(self.user.name, self.bet)
+        err2 = place_bet(interaction.user.name, self.bet)
+        if err or err2:
+            if err:
+                give(interaction.user.name, self.bet)
+                interaction.response.send_message(f"{self.user.name} doesn't have enough monies!")
+            else:
+                give(self.user.name, self.bet)
+                interaction.response.send_message(f"{interaction.user.name} doesn't have enough monies!")
+            return
+        await interaction.response.edit_message(embed=discord.Embed(
+            title="Connect 4",
+            description=f"""
+X: {self.user.name}, O: {interaction.user.name}
+```
+1 2 3 4 5 6 7
+. . . . . . .
+. . . . . . .
+. . . . . . .
+. . . . . . .
+. . . . . . .
+. . . . . . .
+```
+
+It is {self.user.name}'s turn.
+"""
+        ), view=ConnectFourGame(self.user, interaction.user, self.bet))
+        
+
+class ConnectFourGame(discord.ui.View):
+    def __init__(self, user, user2, bet):
+        super().__init__(timeout=300)
+        self.user = user
+        self.user2 = user2
+        self.bet = bet
+        self.board = ["" for i in range(7)]
+        self.turn = user
+        self.gameover = False
+
+    def _checkfour(self):
+        board = [col.ljust(6, '.') for col in self.board]
+        cols = len(board)
+        rows = len(board[0])
+    
+        # right, up, up-right, down-right
+        directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
+    
+        for c in range(cols):
+            for r in range(rows):
+                piece = board[c][r]
+                if piece == '.':
+                    continue
+                for dc, dr in directions:
+                    if all(
+                        0 <= c + dc * i < cols
+                        and 0 <= r + dr * i < rows
+                        and board[c + dc * i][r + dr * i] == piece
+                        for i in range(4)
+                    ):
+                        return piece
+        return None
+
+    def _update(self, column, to):
+        self.board[column-1] += "OX"[to]
+        rows = '\n'.join(
+            ' '.join(self.board[j][i] if len(self.board[j]) > i else '.' for j in range(7))
+            for i in range(5, -1, -1)
+        )
+        y = self._checkfour()
+        if y:
+            if y == "O":
+                finaltext = f"{self.user2.name} won!"
+                give(self.user2.name, self.bet * 2)
+            else:
+                finaltext = f"{self.user.name} won!"
+                give(self.user.name, self.bet * 2)
+            self.gameover = True
+        else:
+            finaltext = f"It is {self.turn.name}'s turn."
+        return f"""
+X: {self.user.name}, O: {self.user2.name}
+```
+1 2 3 4 5 6 7
+{rows}
+```
+{finaltext}
+    """
+        
+    @discord.ui.button(label="1", style=discord.ButtonStyle.primary)
+    async def column_1(self, interaction, button):
+        if interaction.user != self.user and interaction.user != self.user2:
+            await interaction.response.send_message("This isn't your game!", ephemeral = True)
+            return
+        if self.gameover:
+            await interaction.response.send_message("This game is already over!", ephemeral = True)
+            return
+        if self.turn != interaction.user:
+            await interaction.response.send_message("It's not your turn!", ephemeral = True)
+            return
+        if len(self.board[0]) >= 6:
+            await interaction.response.send_message("This column is full!", ephemeral = True)
+            return
+        if self.turn == self.user:
+            self.turn = self.user2
+        else:
+            self.turn = self.user
+        await interaction.response.edit_message(embed=discord.Embed(title="Connect 4 - GameBot", description=self._update(1, (interaction.user == self.user))), view = self)
+
+    @discord.ui.button(label="2", style=discord.ButtonStyle.primary)
+    async def column_2(self, interaction, button):
+        if interaction.user != self.user and interaction.user != self.user2:
+            await interaction.response.send_message("This isn't your game!", ephemeral = True)
+            return
+        if self.gameover:
+            await interaction.response.send_message("This game is already over!", ephemeral = True)
+            return
+        if self.turn != interaction.user:
+            await interaction.response.send_message("It's not your turn!", ephemeral = True)
+            return
+        if len(self.board[1]) >= 6:
+            await interaction.response.send_message("This column is full!", ephemeral = True)
+            return
+        if self.turn == self.user:
+            self.turn = self.user2
+        else:
+            self.turn = self.user
+        await interaction.response.edit_message(embed=discord.Embed(title="Connect 4 - GameBot", description=self._update(2, (interaction.user == self.user))), view = self)
+
+    @discord.ui.button(label="3", style=discord.ButtonStyle.primary)
+    async def column_3(self, interaction, button):
+        if interaction.user != self.user and interaction.user != self.user2:
+            await interaction.response.send_message("This isn't your game!", ephemeral = True)
+            return
+        if self.gameover:
+            await interaction.response.send_message("This game is already over!", ephemeral = True)
+            return
+        if self.turn != interaction.user:
+            await interaction.response.send_message("It's not your turn!", ephemeral = True)
+            return
+        if len(self.board[2]) >= 6:
+            await interaction.response.send_message("This column is full!", ephemeral = True)
+            return
+        if self.turn == self.user:
+            self.turn = self.user2
+        else:
+            self.turn = self.user
+        await interaction.response.edit_message(embed=discord.Embed(title="Connect 4 - GameBot", description=self._update(3, (interaction.user == self.user))), view = self)
+
+    @discord.ui.button(label="4", style=discord.ButtonStyle.primary)
+    async def column_4(self, interaction, button):
+        if interaction.user != self.user and interaction.user != self.user2:
+            await interaction.response.send_message("This isn't your game!", ephemeral = True)
+            return
+        if self.gameover:
+            await interaction.response.send_message("This game is already over!", ephemeral = True)
+            return
+        if self.turn != interaction.user:
+            await interaction.response.send_message("It's not your turn!", ephemeral = True)
+            return
+        if len(self.board[3]) >= 6:
+            await interaction.response.send_message("This column is full!", ephemeral = True)
+            return
+        if self.turn == self.user:
+            self.turn = self.user2
+        else:
+            self.turn = self.user
+        await interaction.response.edit_message(embed=discord.Embed(title="Connect 4 - GameBot", description=self._update(4, (interaction.user == self.user))), view = self)
+
+    @discord.ui.button(label="5", style=discord.ButtonStyle.primary)
+    async def column_5(self, interaction, button):
+        if interaction.user != self.user and interaction.user != self.user2:
+            await interaction.response.send_message("This isn't your game!", ephemeral = True)
+            return
+        if self.gameover:
+            await interaction.response.send_message("This game is already over!", ephemeral = True)
+            return
+        if self.turn != interaction.user:
+            await interaction.response.send_message("It's not your turn!", ephemeral = True)
+            return
+        if len(self.board[4]) >= 6:
+            await interaction.response.send_message("This column is full!", ephemeral = True)
+            return
+        if self.turn == self.user:
+            self.turn = self.user2
+        else:
+            self.turn = self.user
+        await interaction.response.edit_message(embed=discord.Embed(title="Connect 4 - GameBot", description=self._update(5, (interaction.user == self.user))), view = self)
+
+    @discord.ui.button(label="6", style=discord.ButtonStyle.primary)
+    async def column_6(self, interaction, button):
+        if interaction.user != self.user and interaction.user != self.user2:
+            await interaction.response.send_message("This isn't your game!", ephemeral = True)
+            return
+        if self.gameover:
+            await interaction.response.send_message("This game is already over!", ephemeral = True)
+            return
+        if self.turn != interaction.user:
+            await interaction.response.send_message("It's not your turn!", ephemeral = True)
+            return
+        if len(self.board[5]) >= 6:
+            await interaction.response.send_message("This column is full!", ephemeral = True)
+            return
+        if self.turn == self.user:
+            self.turn = self.user2
+        else:
+            self.turn = self.user
+        await interaction.response.edit_message(embed=discord.Embed(title="Connect 4 - GameBot", description=self._update(6, (interaction.user == self.user))), view = self)
+
+    @discord.ui.button(label="7", style=discord.ButtonStyle.primary)
+    async def column_7(self, interaction, button):
+        if interaction.user != self.user and interaction.user != self.user2:
+            await interaction.response.send_message("This isn't your game!", ephemeral = True)
+            return
+        if self.gameover:
+            await interaction.response.send_message("This game is already over!", ephemeral = True)
+            return
+        if self.turn != interaction.user:
+            await interaction.response.send_message("It's not your turn!", ephemeral = True)
+            return
+        if len(self.board[6]) >= 6:
+            await interaction.response.send_message("This column is full!", ephemeral = True)
+            return
+        if self.turn == self.user:
+            self.turn = self.user2
+        else:
+            self.turn = self.user
+        await interaction.response.edit_message(embed=discord.Embed(title="Connect 4 - GameBot", description=self._update(7, (interaction.user == self.user))), view = self)
+
+@client.command(name="ram")
+async def ram(ctx):
+    place_bet(ctx.author.name, 1000)
+    await ctx.send("Thanks for investing in our RAM market! Your return is -100%.")
+
+@client.command(name="connect4")
+async def connect4(ctx, bet: int):
+    user = ctx.author
+    embed = discord.Embed(
+        title="Waiting for Player - Connect 4 - GameBot",
+        description=f"Welcome to Connect 4.\nBet: **{bet}**",
+        color= discord.Color.blurple()
+    )
+    view = StartConnectFour(user, bet)
+    await ctx.send(embed = embed, view = view)
+
+@client.command(name="br0k3")
+async def br0k3(ctx):
+    await ctx.send("You're broke? Can't be me.")
+
+def generate_word(model):
+    candidates = [
+        word for word in model.index_to_key
+        if word.isalpha() and word.islower() and 3 <= len(word) <= 12
+    ]
+
+    while True:
+        word = random.choice(candidates)
+
+        try:
+            model.most_similar(word, topn=10)
+            return word
+        except KeyError:
+            continue
+
+class ContextoModal(discord.ui.Modal, title="GameBotContexto"):
+    def __init__(self, words, target):
+        self.words = words
+        self.target = target
+    quese = discord.ui.TextInput(label="Word to guess", placeholder = "fire", required=True, max_length=20)
+    async def on_submit(self, interaction):
+        # Check if valid word
+        if self.quese.value.lower() in model.key_to_index:
+            # get similarity
+            self.words.append(model.similarity(self.target, self.quese.value.lower()))
+            embed = discord.Embed(
+                title="Contexto - GameBot",
+                description=""
+            )
+            interaction.response.edit_message()
+
+class ContextoView(discord.ui.View):
+    def __init__(self, user):
+        super().__init__(timeout=300)
+        self.user = user
+        self.word = generate_word(model)
+        self.gameover = False
+        self.guessed = []
+    @discord.ui.button(label="Guess")
+    async def guess(self, interaction):
+        if self.gameover:
+            await interaction.response.send_message("This game has ended!")
+            return
+        if self.user != interaction.user:
+            await interaction.response.send_message("This isn't your game of Contexto!")
+        
+
+@client.command(name="contexto")
+async def contexto(ctx):
+    await 0
 
 @client.command(name="help")
 async def help(ctx):
@@ -1095,6 +1769,10 @@ GameBot is a bot designed for you to gamble in slots, roulette, dice, and more! 
 * .buystocks [ticker] - Buy a stock
 * .sellstocks [ticker] - Sell a stock
 * .highlow [bet] - Play HighLow
+* .texasholdem - Play Texas Hold'em
+* .ram - Invest in the RAM market, lose money 100% of the time.
+* .connect4 [bet] - Play Multiplayer connect 4
+* .contexto - Play Contexto risk free! (No bets)
 
 The currency for interacting with GameBot is monies. Monies can be earned from gambling, being paid by another user, stealing from another user, working, or begging.
 
