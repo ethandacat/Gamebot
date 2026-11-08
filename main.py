@@ -1761,6 +1761,65 @@ async def wordguess(ctx, bet: int):
         return
     await ctx.send(embed=embed, view=wordguessView(ctx.author, bet))
 
+class NumberguessModal(discord.ui.Modal):
+    def __init__(self, v):
+        super().__init__(timeout=300, title="Number Guess - GameBot")
+        self.v = v
+    b=discord.ui.TextInput(label="Guess", placeholder="67", required=True, max_length=20)
+    async def on_submit(self, interaction):
+        # Check if valid number
+        if not self.b.value.isdigit():
+            await interaction.response.send_message("That's not a number!", ephemeral=True)
+            return
+        b= int(self.b.value)
+        if b < 1 or b > 100:
+            await interaction.response.send_message("This number is out of bounds!", ephemeral = True)
+            return
+        if b == self.v.number:
+            mult = round(27.3634 / 2**(self.v.guesses+1), 2)
+            await interaction.response.edit_message(embed=discord.Embed(title="Number Guess - GameBot", description=f"You won in {self.v.guesses} tries! You won a {mult}x prize!"))
+            give(self.v.user.name, mult*self.v.bet)
+            self.v.gameover = True
+            return
+        if b > self.v.number:
+            self.v.up = b-1
+        else:
+            self.v.low = b+1
+        self.v.guesses += 1
+        await interaction.response.edit_message(embed=discord.Embed(
+            title="Number Guess - GameBot",
+            description=f"Not quite, it was {['higher','lower'][b>self.v.number]}.\nRange: {self.v.low}-{self.v.up}"
+        ), view=self.v)
+
+class NumberguessView(discord.ui.View):
+    def __init__(self, bet, user):
+        super().__init__(timeout=300)
+        self.bet = bet
+        self.number = random.randint(1, 100)
+        print(self.number)
+        self.user = user
+        self.guesses = 0 # 6-7 avg
+        self.low = 1
+        self.up = 100
+        self.gameover = False
+    @discord.ui.button(label="Guess", style=discord.ButtonStyle.primary)
+    async def guess(self, interaction, button):
+        if interaction.user != self.user:
+            await interaction.response.send_message("This game is not yours!", ephemeral = True)
+            return
+        if self.gameover:
+            await interaction.response.send_message("This game is over!", ephemeral = True)
+            return
+        await interaction.response.send_modal(NumberguessModal(self))
+
+@client.command(name="numberguess")
+async def numberguess(ctx, bet: int):
+    err = place_bet(ctx.author.name, bet)
+    if err:
+        await ctx.send(err)
+        return
+    await ctx.send(embed=discord.Embed(title="Number Guess - GameBot", description="Make your first guess!\nRange: 1-100", color=discord.Color.blurple()), view=NumberguessView(bet, ctx.author))
+
 @client.command(name="help")
 async def help(ctx):
     await ctx.send("""
