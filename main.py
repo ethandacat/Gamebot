@@ -12,7 +12,7 @@ import os
 import pyphen
 
 import gensim.downloader as api
-model = api.load("glove-wiki-gigaword-100")
+model = api.load("glove-wiki-gigaword-50")
 
 with open("credentials.txt", "r") as f:
     q = f.read().splitlines()
@@ -1705,21 +1705,29 @@ def generate_word(model):
         except KeyError:
             continue
 
-class ContextoModal(discord.ui.Modal, title="GameBotContexto"):
-    def __init__(self, words, target):
+class ContextoModal(discord.ui.Modal):
+    def __init__(self, words, target,v):
+        super().__init__(title="Contexto - GameBot")
         self.words = words
+        print(target)
         self.target = target
+        self.v = v
     quese = discord.ui.TextInput(label="Word to guess", placeholder = "fire", required=True, max_length=20)
     async def on_submit(self, interaction):
         # Check if valid word
         if self.quese.value.lower() in model.key_to_index:
             # get similarity
-            self.words.append(model.similarity(self.target, self.quese.value.lower()))
+            sim = model.similarity(self.target, self.quese.value.lower())
+            wontext = ""
+            if sim == 1:
+                wontext = "You won!"
+            self.words.append([self.quese.value.lower(), sim])
+            self.words.sort(key=lambda x: -float(x[1]))
             embed = discord.Embed(
                 title="Contexto - GameBot",
-                description=""
+                description=f"{'\n'.join([i[0]+" - "+(float(i[1])+1/2*100)+'%' for i in self.words])}\n{wontext}"
             )
-            interaction.response.edit_message()
+            await interaction.response.edit_message(embed=embed, view=self.v)
 
 class ContextoView(discord.ui.View):
     def __init__(self, user):
@@ -1729,17 +1737,22 @@ class ContextoView(discord.ui.View):
         self.gameover = False
         self.guessed = []
     @discord.ui.button(label="Guess")
-    async def guess(self, interaction):
+    async def guess(self, interaction, button):
         if self.gameover:
             await interaction.response.send_message("This game has ended!")
             return
         if self.user != interaction.user:
             await interaction.response.send_message("This isn't your game of Contexto!")
+        await interaction.response.send_modal(ContextoModal(self.guessed, self.word, self))
         
 
 @client.command(name="contexto")
 async def contexto(ctx):
-    await 0
+    embed = discord.Embed(
+        title="Contexto - GameBot",
+        description="Make your first guess!"
+    )
+    await ctx.send(embed=embed, view=ContextoView(ctx.author))
 
 @client.command(name="help")
 async def help(ctx):
