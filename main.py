@@ -8,11 +8,12 @@ import re
 import random
 import asyncio
 import json
+import math
 import os
 import pyphen
 
+from gensim.models import KeyedVectors
 import gensim.downloader as api
-model = api.load("glove-wiki-gigaword-50")
 
 with open("credentials.txt", "r") as f:
     q = f.read().splitlines()
@@ -32,6 +33,13 @@ with open("monies.txt", "r") as f:
             user, amount = g.rsplit(" ", 1)
             m[user] = int(amount)
 
+print("Loading WordGuess resources...")
+model = KeyedVectors.load("glove50.kv", mmap="r") if os.path.exists("glove50.kv") else None
+if model is None:
+    print("Caching WordGuess resources for future runs...")
+    model = KeyedVectors.load_word2vec_format(api.load("glove-wiki-gigaword-50", return_path=True))
+    model.save("glove50.kv")
+print("Done!")
 
 def save():
     with open("monies.txt", "w") as f:
@@ -1437,20 +1445,20 @@ class StartConnectFour(discord.ui.View):
     @discord.ui.button(label="Join Game", style=discord.ButtonStyle.primary)
     async def join_game(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user == self.user:
-            interaction.response.send_message("You can't join your own game!", ephemeral = True)
+            await interaction.response.send_message("You can't join your own game!", ephemeral = True)
             return
         if self.gameover:
-            interaction.response.send_message("This game has already started!", ephemeral = True)
+            await interaction.response.send_message("This game has already started!", ephemeral = True)
             return
         err = place_bet(self.user.name, self.bet)
         err2 = place_bet(interaction.user.name, self.bet)
         if err or err2:
             if err:
                 give(interaction.user.name, self.bet)
-                interaction.response.send_message(f"{self.user.name} doesn't have enough monies!")
+                await interaction.response.send_message(f"{self.user.name} doesn't have enough monies!")
             else:
                 give(self.user.name, self.bet)
-                interaction.response.send_message(f"{interaction.user.name} doesn't have enough monies!")
+                await interaction.response.send_message(f"{interaction.user.name} doesn't have enough monies!")
             return
         await interaction.response.edit_message(embed=discord.Embed(
             title="Connect 4",
@@ -1690,28 +1698,19 @@ async def connect4(ctx, bet: int):
 async def br0k3(ctx):
     await ctx.send("You're broke? Can't be me.")
 
-def generate_word(model):
-    candidates = [
-        word for word in model.index_to_key
-        if word.isalpha() and word.islower() and 3 <= len(word) <= 12
-    ]
+def generate_word():
+    with open("english_words.txt", "r") as f:
+        return random.choice(f.read().split())
 
-    while True:
-        word = random.choice(candidates)
-
-        try:
-            model.most_similar(word, topn=10)
-            return word
-        except KeyError:
-            continue
-
-class ContextoModal(discord.ui.Modal):
-    def __init__(self, words, target,v):
-        super().__init__(title="Contexto - GameBot")
+class wordguessModal(discord.ui.Modal):
+    def __init__(self, words, target,v, bet):
+        super().__init__(title="wordguess - GameBot")
         self.words = words
         print(target)
+        print(words)
         self.target = target
         self.v = v
+        self.bet = bet
     quese = discord.ui.TextInput(label="Word to guess", placeholder = "fire", required=True, max_length=20)
     async def on_submit(self, interaction):
         # Check if valid word
@@ -1720,39 +1719,47 @@ class ContextoModal(discord.ui.Modal):
             sim = model.similarity(self.target, self.quese.value.lower())
             wontext = ""
             if sim == 1:
-                wontext = "You won!"
+                mult = 23.3 * math.exp(-(len(self.words)+1)/8)
+                wontext = f"You won in {len(self.words)+1} tries, and earned {mult} times your money, earning {round(mult*self.bet)} monies!"
+                give(self.v.user.name, round(mult*self.bet))
+                self.v.gameover = True
             self.words.append([self.quese.value.lower(), sim])
             self.words.sort(key=lambda x: -float(x[1]))
             embed = discord.Embed(
-                title="Contexto - GameBot",
-                description=f"{'\n'.join([i[0]+" - "+(float(i[1])+1/2*100)+'%' for i in self.words])}\n{wontext}"
+                title="wordguess - GameBot",
+                description=f"{'\n'.join([i[0]+" - "+str((float(i[1])+1)*50)+'%' for i in self.words])}\n{wontext}"
             )
             await interaction.response.edit_message(embed=embed, view=self.v)
 
-class ContextoView(discord.ui.View):
-    def __init__(self, user):
+class wordguessView(discord.ui.View):
+    def __init__(self, user, bet):
         super().__init__(timeout=300)
         self.user = user
-        self.word = generate_word(model)
+        self.word = generate_word()
         self.gameover = False
         self.guessed = []
+        self.bet = bet
     @discord.ui.button(label="Guess")
     async def guess(self, interaction, button):
         if self.gameover:
             await interaction.response.send_message("This game has ended!")
             return
         if self.user != interaction.user:
-            await interaction.response.send_message("This isn't your game of Contexto!")
-        await interaction.response.send_modal(ContextoModal(self.guessed, self.word, self))
+            await interaction.response.send_message("This isn't your game of wordguess!")
+        await interaction.response.send_modal(wordguessModal(self.guessed, self.word, self, self.bet))
         
 
-@client.command(name="contexto")
-async def contexto(ctx):
+@client.command(name="wordguess")
+async def wordguess(ctx, bet: int):
     embed = discord.Embed(
-        title="Contexto - GameBot",
+        title="wordguess - GameBot",
         description="Make your first guess!"
     )
-    await ctx.send(embed=embed, view=ContextoView(ctx.author))
+    err = place_bet(ctx.author.name, bet)
+    if err:
+        await ctx.send(err)
+        return
+    await ctx.send(embed=embed, view=wordguessView(ctx.author, bet))
 
 @client.command(name="help")
 async def help(ctx):
@@ -1785,7 +1792,7 @@ GameBot is a bot designed for you to gamble in slots, roulette, dice, and more! 
 * .texasholdem - Play Texas Hold'em
 * .ram - Invest in the RAM market, lose money 100% of the time.
 * .connect4 [bet] - Play Multiplayer connect 4
-* .contexto - Play Contexto risk free! (No bets)
+* .wordguess [bet] - Play wordguess (also known as Contexto)
 
 The currency for interacting with GameBot is monies. Monies can be earned from gambling, being paid by another user, stealing from another user, working, or begging.
 
