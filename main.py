@@ -1820,6 +1820,11 @@ async def numberguess(ctx, bet: int):
         return
     await ctx.send(embed=discord.Embed(title="Number Guess - GameBot", description="Make your first guess!\nRange: 1-100", color=discord.Color.blurple()), view=NumberguessView(bet, ctx.author))
 
+@client.command(name="numble")
+async def numble(ctx, bet: int):
+    
+    
+
 @client.command(name="help")
 async def help(ctx):
     await ctx.send("""
