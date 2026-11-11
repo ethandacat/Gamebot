@@ -1820,10 +1820,17 @@ async def numberguess(ctx, bet: int):
         return
     await ctx.send(embed=discord.Embed(title="Number Guess - GameBot", description="Make your first guess!\nRange: 1-100", color=discord.Color.blurple()), view=NumberguessView(bet, ctx.author))
 
-@client.command(name="numble")
-async def numble(ctx, bet: int):
-    
-    
+class G2048View(discord.ui.View):
+    def __init__(self, user):
+        super().__init__(timeout=300)
+        self.user = user
+        self.board = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]]
+        self.gameover = False
+    @discord.ui.button(label="⬅️")
+
+@client.command(name="2048")
+async def twothousandfortyeight(ctx):
+    await ctx.send(embed=discord.Embed(title="2048 - GameBot", description="Press any button to start", color=discord.Color.green()), view=G2048View(ctx.author))
 
 @client.command(name="help")
 async def help(ctx):
