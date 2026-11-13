@@ -29,5 +29,7 @@ Rename monies-example.txt to monies.txt and delete the entire text content.
 
 ### How to Run
 To run the code, simply run `python main.py` in the main folder.
+On the first run, GameBot downloads the GloVe word vectors that `.wordguess` needs and caches them as `glove50.kv` and `glove50.kv.vectors.npy` (about 87 MB combined).
+Those two files are gitignored and are rebuilt automatically if you delete them, so the first start takes considerably longer than later ones.
 
 WARNING: I DO NOT SUPPORT GAMBLING IRL MONEY!!! IF YOU GAMBLE A LOT AND HAVE PROBLEMS CALL +1800MYRESET or +1800GAMBLER

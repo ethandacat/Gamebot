@@ -5,3 +5,7 @@ monies.txt
 .toolremote/local/
 .toolremote/*.local.json
 __pycache__/
+
+# WordGuess model cache - downloaded and rebuilt by main.py on first run
+glove50.kv
+glove50.kv.vectors.npy
