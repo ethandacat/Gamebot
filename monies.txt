@@ -1,11 +1,4 @@
-<<<<<<< HEAD
-ethan.cat 9.707156463640786e+17
+ethan.cat 96498639869346
 bruh 5860709743961864
 dantestevelavechicken1999 30000
 mrmacing 100372
-=======
-ethan.cat 9707156463641054
-bruh 5860709743961864
-dantestevelavechicken1999 30000
-mrmacing 99972
->>>>>>> 59740a5 (ToolRemote checkpoint - 2026-11-07 14:08)
