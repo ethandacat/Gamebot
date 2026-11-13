@@ -1741,13 +1741,6 @@ class wordguessView(discord.ui.View):
         self.guessed = []
         self.bet = bet
 
-class ContextoView(discord.ui.View):
-    def __init__(self, user):
-        super().__init__(timeout=300)
-        self.user = user
-        self.word = generate_word(model)
-        self.gameover = False
-        self.guessed = []
     @discord.ui.button(label="Guess")
     async def guess(self, interaction, button):
         if self.gameover:
@@ -1862,7 +1855,6 @@ GameBot is a bot designed for you to gamble in slots, roulette, dice, and more! 
 * .ram - Invest in the RAM market, lose money 100% of the time.
 * .connect4 [bet] - Play Multiplayer connect 4
 * .wordguess [bet] - Play wordguess (also known as Contexto)
-)
 
 The currency for interacting with GameBot is monies. Monies can be earned from gambling, being paid by another user, stealing from another user, working, or begging.
 

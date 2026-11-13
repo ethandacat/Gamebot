@@ -4,3 +4,4 @@ monies.txt
 # ToolRemote (machine-local, never commit)
 .toolremote/local/
 .toolremote/*.local.json
+__pycache__/
